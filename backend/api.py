@@ -7,14 +7,14 @@ from tempfile import TemporaryDirectory
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from backend.analytics.service import get_doubt_frequency_data
 from backend.attendance.service import (
     delete_enrollment,
     enroll_student,
-    get_photo_path,
+    get_photo_url,
     get_session_detail,
     list_attendance_history,
     list_roster,
@@ -37,8 +37,6 @@ from backend.transcription.service import process_lecture_audio
 from backend.transcription.transcribe import transcribe_audio
 
 load_dotenv()
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ChatMessage(BaseModel):
@@ -362,10 +360,10 @@ def attendance_roster():
 @app.get("/attendance/roster/{student_id}/photo")
 def attendance_roster_photo(student_id: str):
     try:
-        photo_path = get_photo_path(student_id)
+        photo_url = get_photo_url(student_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return FileResponse(photo_path, media_type="image/jpeg")
+    return RedirectResponse(photo_url)
 
 
 @app.delete("/attendance/roster/{student_id}")

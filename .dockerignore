@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.env
+.claude/
+.streamlit/
+streamlit_app/
+notebooks/
+data/
+scripts/
+README.md
+Dockerfile
+.dockerignore
+deploy/

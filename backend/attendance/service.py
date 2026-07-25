@@ -3,21 +3,25 @@ from __future__ import annotations
 import io
 import uuid
 from datetime import date, datetime, timezone
-from pathlib import Path
 
 import face_recognition
 import numpy as np
 from PIL import Image, ImageDraw
 from sqlalchemy import text
 
-from backend.db import get_engine
+from backend.db import get_engine, get_supabase_client
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-ATTENDANCE_DIR = PROJECT_ROOT / "data" / "attendance"
-PHOTOS_DIR = ATTENDANCE_DIR / "photos"
+PHOTOS_BUCKET = "attendance-photos"
 
 MATCH_TOLERANCE = 0.5
 THUMBNAIL_SIZE = (240, 240)
+
+
+def _ensure_bucket() -> None:
+    storage = get_supabase_client().storage
+    existing = {bucket.name for bucket in storage.list_buckets()}
+    if PHOTOS_BUCKET not in existing:
+        storage.create_bucket(PHOTOS_BUCKET, options={"public": True})
 
 
 def _image_from_bytes(image_bytes: bytes) -> np.ndarray:
@@ -34,6 +38,8 @@ def _largest_face(face_locations: list[tuple[int, int, int, int]]) -> tuple[int,
 
 
 def _save_thumbnail(image_array: np.ndarray, face_location: tuple[int, int, int, int], student_id: str) -> str:
+    """Crops, resizes, and uploads the enrollment thumbnail to Supabase Storage.
+    Returns the object path (relative to the bucket), not a local file path."""
     top, right, bottom, left = face_location
     pad_y = int((bottom - top) * 0.25)
     pad_x = int((right - left) * 0.25)
@@ -49,10 +55,17 @@ def _save_thumbnail(image_array: np.ndarray, face_location: tuple[int, int, int,
     )
     crop.thumbnail(THUMBNAIL_SIZE)
 
-    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-    photo_path = PHOTOS_DIR / f"{student_id}.jpg"
-    crop.save(photo_path, format="JPEG", quality=88)
-    return str(photo_path.relative_to(PROJECT_ROOT))
+    buffer = io.BytesIO()
+    crop.save(buffer, format="JPEG", quality=88)
+
+    _ensure_bucket()
+    object_path = f"{student_id}.jpg"
+    get_supabase_client().storage.from_(PHOTOS_BUCKET).upload(
+        object_path,
+        buffer.getvalue(),
+        file_options={"content-type": "image/jpeg", "x-upsert": "true"},
+    )
+    return object_path
 
 
 def enroll_student(student_id: str, name: str, image_bytes: bytes) -> dict:
@@ -125,7 +138,7 @@ def list_roster() -> list[dict]:
         ]
 
 
-def get_photo_path(student_id: str) -> Path:
+def get_photo_url(student_id: str) -> str:
     with get_engine().connect() as conn:
         photo_path = conn.execute(
             text("SELECT photo_path FROM attendance_roster WHERE student_id = :sid"),
@@ -133,7 +146,7 @@ def get_photo_path(student_id: str) -> Path:
         ).scalar_one_or_none()
     if not photo_path:
         raise FileNotFoundError(f"No enrolled photo found for student: {student_id}")
-    return PROJECT_ROOT / photo_path
+    return get_supabase_client().storage.from_(PHOTOS_BUCKET).get_public_url(photo_path)
 
 
 def delete_enrollment(student_id: str) -> None:
@@ -147,9 +160,7 @@ def delete_enrollment(student_id: str) -> None:
         conn.execute(text("DELETE FROM attendance_roster WHERE student_id = :sid"), {"sid": student_id})
 
     if photo_path:
-        full_path = PROJECT_ROOT / photo_path
-        if full_path.exists():
-            full_path.unlink()
+        get_supabase_client().storage.from_(PHOTOS_BUCKET).remove([photo_path])
 
 
 def _annotate_image(image_array: np.ndarray, detections: list[dict]) -> str:

@@ -1,4 +1,12 @@
+import os
+
 import streamlit as st
+
+try:
+    for key, value in st.secrets.items():
+        os.environ.setdefault(key, str(value))
+except Exception:
+    pass
 
 home_page = st.Page("home_page.py", title="Home", icon=":material/home:")
 doubt_solver = st.Page("pages/0_Doubt_Solver_API.py", title="AI Doubt Solver", icon=":material/chat:")

@@ -59,12 +59,12 @@ graph LR
     Whisper --> Audio[("Uploaded audio<br/>(not persisted)")]
     Quiz --> PG
     Face --> PG
-    Face --> Photos[("data/attendance/photos/<br/>(local thumbnails)")]
+    Face --> Photos[("Supabase Storage<br/>attendance-photos bucket")]
     Risk --> PG
     Auth --> PG
 ```
 
-Everything except the uploaded audio (processed in-memory/temp) and enrolled-face thumbnail photos (kept as local JPEGs, referenced by path from Postgres) lives in one Supabase Postgres database — see `supabase/schema.sql` for the full table list.
+Everything except the uploaded audio (processed in-memory/temp) lives in Supabase: structured data in Postgres (`supabase/schema.sql` has the full table list) and enrolled-face thumbnail photos in Supabase Storage (`attendance-photos` bucket, referenced by object path from the `attendance_roster` table).
 
 ## Getting Started
 
@@ -97,15 +97,16 @@ pip install -r requirements.txt
 
 # 4. Configure environment variables
 cp .env.example .env
-# then edit .env and add your GROQ_API_KEY and DATABASE_URL (see below)
+# then edit .env and add your GROQ_API_KEY, DATABASE_URL, SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY (see below)
 ```
 
 ### Database setup (Supabase)
 
 1. Create a project at [supabase.com](https://supabase.com/) (the free tier is enough).
 2. In the dashboard: **Database → Extensions** → enable **vector** (pgvector).
-3. In the dashboard: **Project Settings → Database → Connection string**, copy the URI, fill in your database password, and put the complete string in `.env` as `DATABASE_URL` (never commit the real value — `.env` is gitignored, `.env.example` should only ever hold a placeholder).
-4. Run the setup script — it creates every table (idempotent, safe to re-run) and seeds the synthetic classroom dataset from `data/analytics/*.csv` so the ML risk model, study plan, and doubt-frequency features work immediately:
+3. In the dashboard: **Project Settings → Database → Connection string** (use the **Connection pooling** URI, not the direct connection — the direct host is often IPv6-only), fill in your database password, and put the complete string in `.env` as `DATABASE_URL` (never commit the real value — `.env` is gitignored, `.env.example` should only ever hold a placeholder).
+4. In the dashboard: **Project Settings → API**, copy the **Project URL** and **service_role key** into `.env` as `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` — used for the `attendance-photos` Storage bucket (created automatically on first enrollment).
+5. Run the setup script — it creates every table (idempotent, safe to re-run) and seeds the synthetic classroom dataset from `data/analytics/*.csv` so the ML risk model, study plan, and doubt-frequency features work immediately:
 
 ```bash
 python scripts/migrate_to_supabase.py
@@ -135,7 +136,7 @@ The Streamlit app expects the backend at `http://localhost:8000` by default — 
 study_genie/
 ├── backend/
 │   ├── api.py                 # FastAPI app and all route definitions
-│   ├── db.py                  # Shared SQLAlchemy engine (reads DATABASE_URL)
+│   ├── db.py                  # Shared SQLAlchemy engine + Supabase Storage client
 │   ├── analytics/             # Doubt frequency analytics
 │   ├── attendance/            # Face enrollment + group-photo attendance marking
 │   ├── auth/                  # Signup/login, bcrypt hashing, profile aggregation
@@ -155,12 +156,14 @@ study_genie/
 │   └── migrate_to_supabase.py # Applies schema.sql and seeds the classroom dataset
 ├── data/
 │   ├── analytics/              # Source CSVs for the synthetic classroom dataset (seed data only)
-│   ├── audio/                  # Sample audio for transcription testing
-│   └── attendance/photos/       # Enrolled face thumbnails (gitignored; roster data itself is in Postgres)
+│   └── audio/                   # Sample audio for transcription testing
+├── deploy/
+│   └── huggingface-space-README.md  # README template for the backend's HF Space (not this repo's README)
+├── Dockerfile                  # Backend container image (Hugging Face Spaces, Docker SDK)
 └── notebooks/                  # Data generation / experimentation notebooks
 ```
 
-Everything that used to be a runtime-generated CSV/JSON file (accounts, saved materials, quiz attempts, attendance logs, the attendance roster, the RAG vector index) now lives in Postgres instead — the files under `data/` are either static seed data (`data/analytics/*.csv`, loaded once by the migration script) or local binary assets (audio, face thumbnails).
+Everything that used to be a runtime-generated CSV/JSON file or local disk asset (accounts, saved materials, quiz attempts, attendance logs and roster, enrolled-face photos, the RAG vector index) now lives in Supabase — Postgres for structured data, Storage for photos. The files under `data/` are static seed data and sample audio only.
 
 ## API Reference
 
@@ -195,6 +198,13 @@ Everything that used to be a runtime-generated CSV/JSON file (accounts, saved ma
 - Login sessions live in Streamlit's `session_state` only (no persistent cookie yet), so a full page reload requires logging in again.
 - Google login is not wired up — it requires a Google Cloud OAuth client that only the project owner can create. Streamlit's built-in `st.login()` supports it natively once credentials are added to `.streamlit/secrets.toml`.
 - Personalized Study Plan requires an account and shows a "log in to view" wall otherwise.
-- Backend code connects to Postgres through a single shared SQLAlchemy engine/connection pool (`backend/db.py`) rather than opening a new connection per request — this matters on Supabase's free tier, which caps concurrent direct connections. If you scale this beyond local/demo use, switch `DATABASE_URL` to Supabase's connection-pooler string (Session or Transaction mode) instead of the direct connection.
-- Enrolled face thumbnails remain local JPEG files under `data/attendance/photos/` (referenced by path from the `attendance_roster` table) rather than being stored in the database — a deliberate "database for structured data + metadata, filesystem/object storage for image blobs" split, not a compromise.
+- Backend code connects to Postgres through a single shared SQLAlchemy engine/connection pool (`backend/db.py`), and uses Supabase's connection-pooler string (`DATABASE_URL`) rather than the direct connection — this matters on Supabase's free tier, which caps concurrent direct connections and often can't resolve the direct host over IPv4.
+- Enrolled face thumbnails live in the `attendance-photos` Supabase Storage bucket (public, created automatically on first enrollment), referenced by object path from the `attendance_roster` table — not in Postgres and not on local disk, so they survive redeploys.
+
+## Deployment
+
+The backend and frontend deploy as two separate services:
+
+- **Backend (FastAPI)** → [Hugging Face Spaces](https://huggingface.co/spaces), Docker SDK. Build context is this repo's root `Dockerfile`; the Space needs its own `README.md` with Spaces YAML frontmatter (template at [`deploy/huggingface-space-README.md`](deploy/huggingface-space-README.md)) since Spaces and this GitHub repo are separate git histories. Set `GROQ_API_KEY`, `DATABASE_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` under the Space's **Settings → Variables and secrets**.
+- **Frontend (Streamlit)** → [Streamlit Community Cloud](https://streamlit.io/cloud), pointed at `streamlit_app/Home.py`. Set `STUDY_GENIE_API_URL` (your Space's URL) in the app's **Secrets** — `streamlit_app/Home.py` bridges `st.secrets` into `os.environ` on startup so the existing `os.getenv(...)` calls throughout the app pick it up automatically.
 
