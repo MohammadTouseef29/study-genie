@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.env
+data/uploads/
+
+# Enrolled face-recognition thumbnails (biometric-adjacent, runtime-generated)
+data/attendance/
+
+# Local tool/editor config, not part of the project
+.claude/
