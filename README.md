@@ -157,9 +157,6 @@ study_genie/
 ├── data/
 │   ├── analytics/              # Source CSVs for the synthetic classroom dataset (seed data only)
 │   └── audio/                   # Sample audio for transcription testing
-├── deploy/
-│   └── huggingface-space-README.md  # README template for the backend's HF Space (not this repo's README)
-├── Dockerfile                  # Backend container image (Hugging Face Spaces, Docker SDK)
 └── notebooks/                  # Data generation / experimentation notebooks
 ```
 
@@ -203,8 +200,8 @@ Everything that used to be a runtime-generated CSV/JSON file or local disk asset
 
 ## Deployment
 
-The backend and frontend deploy as two separate services:
+The backend and frontend deploy as two separate services, on whatever hosts you choose — the backend is a standard FastAPI/Uvicorn app (`uvicorn backend.api:app --host 0.0.0.0 --port <port>`) with no platform-specific code. Note it's a heavier deploy target (torch, Whisper, dlib, OpenCV, sentence-transformers), so check your host's memory limits before committing.
 
-- **Backend (FastAPI)** → [Hugging Face Spaces](https://huggingface.co/spaces), Docker SDK. Build context is this repo's root `Dockerfile`; the Space needs its own `README.md` with Spaces YAML frontmatter (template at [`deploy/huggingface-space-README.md`](deploy/huggingface-space-README.md)) since Spaces and this GitHub repo are separate git histories. Set `GROQ_API_KEY`, `DATABASE_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` under the Space's **Settings → Variables and secrets**.
-- **Frontend (Streamlit)** → [Streamlit Community Cloud](https://streamlit.io/cloud), pointed at `streamlit_app/Home.py`. Set `STUDY_GENIE_API_URL` (your Space's URL) in the app's **Secrets** — `streamlit_app/Home.py` bridges `st.secrets` into `os.environ` on startup so the existing `os.getenv(...)` calls throughout the app pick it up automatically.
+- **Backend**: needs `GROQ_API_KEY`, `DATABASE_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` set as environment variables, plus `cmake`/a C++ toolchain (to build `dlib`) and `ffmpeg` (for Whisper) available in the deploy environment — see the Prerequisites section above.
+- **Frontend**: needs `STUDY_GENIE_API_URL` pointed at the backend's public URL. On platforms that expose config via a secrets store rather than real env vars (e.g. Streamlit Community Cloud's `st.secrets`), `streamlit_app/Home.py` bridges `st.secrets` into `os.environ` on startup, so the existing `os.getenv(...)` calls throughout the app pick it up automatically either way.
 
